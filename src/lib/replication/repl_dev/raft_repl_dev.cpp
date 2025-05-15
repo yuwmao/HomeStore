@@ -140,7 +140,7 @@ AsyncReplResult<> RaftReplDev::replace_member(const replica_member_info& member_
                                               const replica_member_info& member_in, uint32_t commit_quorum,
                                               uint64_t trace_id) {
     if (is_stopping()) {
-        LOGINFO("repl dev is being shutdown! trace_id={}", trace_id);
+        RD_LOGI(trace_id, "repl dev is being shutdown!");
         return make_async_error<>(ReplServiceError::STOPPING);
     }
     incr_pending_request_num();
@@ -158,16 +158,71 @@ AsyncReplResult<> RaftReplDev::replace_member(const replica_member_info& member_
         // If leader is the member requested to move out, then give up leadership and return error.
         // Client will retry replace_member request to the new leader.
         raft_server()->yield_leadership(true /* immediate */, -1 /* successor */);
-        RD_LOGI(trace_id, "Replace member leader is the member_out so yield leadership");
+        RD_LOGI(trace_id, "Step1. Replace member leader is the member_out so yield leadership");
         reset_quorum_size(0, trace_id);
         decr_pending_request_num();
         return make_async_error<>(ReplServiceError::NOT_LEADER);
     }
 
-    // Step 2. Add the new member.
-    return m_msg_mgr.add_member(m_group_id, member_in.id)
+    auto out_srv_cfg = raft_server()->get_config()->get_server(nuraft_mesg::to_server_id(member_out));
+    if (!out_srv_cfg) {
+        RD_LOGE(trace_id, "Step1. Replace member invalid parameter, out member is not found");
+        reset_quorum_size(0, trace_id);
+        decr_pending_request_num();
+        return make_async_error<>(ReplServiceError::SERVER_NOT_FOUND);
+    }
+    // Step 2: Mark out member as learner
+    auto learner_ret = raft_server()->flip_learner_flag(nuraft_mesg::to_server_id(member_out.id), true);
+    if (learner_ret->get_result_code() != nuraft::cmd_result_code::OK) {
+        RD_LOGE(trace_id, "Step2. Replace member propose to raft to set learner failed, err: {}", learner_ret->get_result_code());
+        reset_quorum_size(0, trace_id);
+        decr_pending_request_num();
+        return make_async_error<>(RaftReplService::to_repl_error(learner_ret->get_result_code()));
+    }
+    RD_LOGI(trace_id, "Step2. Replace member flip out member to learner");
+    // TODO set a timeout
+    while (true) {
+        RD_LOGD(trace_id, "Step2. wait for member becomes learner");
+        auto srv_conf = raft_server()->get_srv_config(nuraft_mesg::to_server_id(member_out.id));
+        if (!srv_conf->is_learner()) { std::this_thread::sleep_for(std::chrono::milliseconds(100)); }
+        break;
+    }
+    // Step 3. Set the priority to 0 for the out member.
+    auto priority_ret = raft_server()->set_priority(nuraft_mesg::to_server_id(member_out.id), 0);
+    if (priority_ret->get_result_code() != nuraft::cmd_result_code::OK) {
+        RD_LOGE(trace_id, "Step3. Replace member propose to raft to set priority failed, err: {}", priority_ret->get_result_code());
+        reset_quorum_size(0, trace_id);
+        decr_pending_request_num();
+        return make_async_error<>(RaftReplService::to_repl_error(priority_ret->get_result_code()));
+    }
+    RD_LOGI(trace_id, "Step3. Replace member set the priority of out member to 0");
+    // Step 4. Append log entry to mark the old member is out and new member is added.
+    auto rreq = repl_req_ptr_t(new repl_req_ctx{});
+    replace_members_ctx members;
+    members.replica_out = member_out;
+    members.replica_in = member_in;
+
+    sisl::blob header(r_cast< uint8_t* >(&members), sizeof(replace_members_ctx));
+    rreq->init(repl_key{.server_id = server_id(), .term = raft_server()->get_term(), .dsn = m_next_dsn.fetch_add(1)},
+               journal_type_t::HS_CTRL_REPLACE, true, header, sisl::blob{}, 0, m_listener);
+
+    auto err = m_state_machine->propose_to_raft(std::move(rreq));
+    if (err != ReplServiceError::OK) {
+        RD_LOGE(trace_id, "Step4. Replace member propose to raft for HS_CTRL_REPLACE req failed {}", err);
+        reset_quorum_size(0, trace_id);
+        decr_pending_request_num();
+        return make_async_error<>(std::move(err));
+    }
+
+    RD_LOGI(trace_id, "Step4. Replace member proposed to raft for HS_CTRL_REPLACE req, group_id={}", group_id_str());
+
+    // Step 5. Add the new member, new member will inherit the priority of the out member.
+    auto new_srv_config =
+        nuraft::srv_config(nuraft_mesg::to_server_id(member_in.id), 0, boost::uuids::to_string(member_in), "", false,
+                           out_srv_cfg->get_priority());
+    return m_msg_mgr.add_member(m_group_id, new_srv_config)
         .via(&folly::InlineExecutor::instance())
-        .thenValue([this, member_in, member_out, commit_quorum, trace_id](auto&& e) -> AsyncReplResult<> {
+        .thenValue([this, member_in, member_out, commit_quorum](auto&& e) -> AsyncReplResult<> {
             // TODO Currently we ignore the cancelled, fix nuraft_mesg to not timeout
             // when adding member. Member is added to cluster config until member syncs fully
             // with atleast stop gap. This will take a lot of time for block or
@@ -178,79 +233,21 @@ AsyncReplResult<> RaftReplDev::replace_member(const replica_member_info& member_
                 // can be resend and one of the add or remove can failed and has to retried.
                 if (e.error() == nuraft::cmd_result_code::CANCELLED ||
                     e.error() == nuraft::cmd_result_code::SERVER_ALREADY_EXISTS) {
-                    RD_LOGI(trace_id, "Ignoring error returned from nuraft add_member {}", e.error());
+                    RD_LOGW(trace_id, "Step5. Ignoring error returned from nuraft add_member {}", e.error());
                 } else {
-                    RD_LOGE(trace_id, "Replace member error in add member : {}", e.error());
+                    RD_LOGE(trace_id, "Step5. Replace member error in add member : {}", e.error());
                     reset_quorum_size(0, trace_id);
                     decr_pending_request_num();
                     return make_async_error<>(RaftReplService::to_repl_error(e.error()));
                 }
             }
 
-            RD_LOGI(trace_id, "Replace member added member={} to group_id={}", boost::uuids::to_string(member_in.id),
+            RD_LOGI(trace_id, "Step5. Replace member added member={} to group_id={}", boost::uuids::to_string(member_in.id),
                     group_id_str());
-
-            // Step 3. Append log entry to mark the old member is out and new member is added.
-            auto rreq = repl_req_ptr_t(new repl_req_ctx{});
-            replace_members_ctx members;
-            members.replica_out = member_out;
-            members.replica_in = member_in;
-
-            sisl::blob header(r_cast< uint8_t* >(&members), sizeof(replace_members_ctx));
-            auto status = init_req_ctx(rreq,
-                                       repl_key{.server_id = server_id(),
-                                                .term = raft_server()->get_term(),
-                                                .dsn = m_next_dsn.fetch_add(1),
-                                                .traceID = trace_id},
-                                       journal_type_t::HS_CTRL_REPLACE, true, header, sisl::blob{}, 0, m_listener);
-
-            if (status != ReplServiceError::OK) {
-                // Failed to initialize the repl_req_ctx for replace member.
-                RD_LOGE(trace_id, "Failed to initialize repl_req_ctx for replace member, error={}", status);
-                reset_quorum_size(0, trace_id);
-                decr_pending_request_num();
-                return make_async_error<>(std::move(status));
-            }
-
-            status = m_state_machine->propose_to_raft(std::move(rreq));
-            if (status != ReplServiceError::OK) {
-                RD_LOGE(trace_id, "Replace member propose to raft failed {}", status);
-                reset_quorum_size(0, trace_id);
-                decr_pending_request_num();
-                return make_async_error<>(std::move(status));
-            }
-
-            RD_LOGI(trace_id, "Replace member proposed to raft group_id={}", group_id_str());
-
-            // Step 4. Remove the old member. Even if the old member is temporarily
-            // down and recovers, nuraft mesg see member remove from cluster log
-            // entry and call exit_group() and leave().
-            return m_msg_mgr.rem_member(m_group_id, member_out.id)
-                .via(&folly::InlineExecutor::instance())
-                .thenValue([this, member_out, commit_quorum, trace_id](auto&& e) -> AsyncReplResult<> {
-                    if (e.hasError()) {
-                        // Ignore the server not found as server removed from the cluster
-                        // as requests are idempotent and can be resend.
-                        if (e.error() == nuraft::cmd_result_code::SERVER_NOT_FOUND) {
-                            RD_LOGW(trace_id, "Remove member not found in group error, ignoring");
-                        } else {
-                            // Its ok to retry this request as the request
-                            // of replace member is idempotent.
-                            RD_LOGE(trace_id, "Replace member failed to remove member : {}", e.error());
-                            reset_quorum_size(0, trace_id);
-                            decr_pending_request_num();
-                            return make_async_error<>(ReplServiceError::RETRY_REQUEST);
-                        }
-                    } else {
-                        RD_LOGI(trace_id, "Replace member removed member={} from group_id={}",
-                                boost::uuids::to_string(member_out.id), group_id_str());
-                    }
-
-                    // Revert the quorum size back to 0.
-                    reset_quorum_size(0, trace_id);
-                    decr_pending_request_num();
-                    return make_async_success<>();
-                });
+            // Revert the quorum size back to 0.
+            reset_quorum_size(0, trace_id);
+            decr_pending_request_num();
+            return make_async_success<>();
         });
 }
 
