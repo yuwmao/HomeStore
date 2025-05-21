@@ -290,6 +290,12 @@ table Consensus {
     // then decay the target_priority and wait again until its priority >= target_priority. This setting helps us to set proper priority for peers.
     // 0 means all members have the same priority.
     max_wait_rounds_of_priority_election: uint32 = 2;
+
+    // Maximum number of retries when raft is undergoing config changing
+    config_changing_error_retries: int32 = 3;
+
+    // The time to wait for config change to be applied in ms
+    wait_for_config_change_ms: uint32 = 500;
 }
 
 table HomeStoreSettings {

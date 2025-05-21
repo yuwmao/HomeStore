@@ -194,8 +194,18 @@ void SoloReplService::load_repl_dev(sisl::byte_view const& buf, void* meta_cooki
 }
 
 AsyncReplResult<> SoloReplService::replace_member(group_id_t group_id, const replica_member_info& member_out,
-                                                  const replica_member_info& member_in, uint32_t commit_quorum,
+                                                  const replica_member_info& member_in, bool immediate_removal, uint32_t commit_quorum,
                                                   uint64_t trace_id) const {
+    return make_async_error<>(ReplServiceError::NOT_IMPLEMENTED);
+}
+
+AsyncReplResult<> SoloReplService::remove_member(group_id_t group_id, const replica_member_info& member, uint32_t commit_quorum,
+                                uint64_t trace_id) const {
+    return make_async_error<>(ReplServiceError::NOT_IMPLEMENTED);
+}
+
+AsyncReplResult<> SoloReplService::flip_learner_flag(group_id_t group_id, const replica_member_info& member, bool target,
+                                    uint32_t commit_quorum, bool wait_and_verify, uint64_t trace_id) const {
     return make_async_error<>(ReplServiceError::NOT_IMPLEMENTED);
 }
 
