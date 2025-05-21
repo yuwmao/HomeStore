@@ -225,7 +225,18 @@ public:
     bool bind_data_service();
     bool join_group();
     AsyncReplResult<> replace_member(const replica_member_info& member_out, const replica_member_info& member_in,
-                                     uint32_t commit_quorum, uint64_t trace_id = 0);
+                                     bool immediate_removal = false, uint32_t commit_quorum = 0, uint64_t trace_id = 0);
+    AsyncReplResult<> remove_member(const replica_member_info& member, uint32_t commit_quorum, uint64_t trace_id = 0);
+    AsyncReplResult<> flip_learner_flag(const replica_member_info& member, bool target, uint32_t commit_quorum,
+                                        bool wait_and_verify = true, uint64_t trace_id = 0);
+    ReplServiceError do_remove_member(const replica_member_info& member, uint64_t trace_id = 0);
+    ReplServiceError do_flip_learner(const replica_member_info& member, bool target, bool wait_and_verify,
+                                     uint64_t trace_id = 0);
+    ReplServiceError set_priority(const replica_member_info& member, int32_t priority, uint64_t trace_id = 0);
+    nuraft::cmd_result_code retry_when_config_change(const std::function< nuraft::cmd_result_code() >& func,
+                                                     uint64_t trace_id = 0);
+    bool wait_and_check(const std::function< bool() >& check_func, uint32_t timeout_ms, uint32_t interval_ms = 100);
+
     folly::SemiFuture< ReplServiceError > destroy_group();
 
     //////////////// All ReplDev overrides/implementation ///////////////////////
