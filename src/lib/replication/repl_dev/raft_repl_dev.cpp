@@ -159,7 +159,7 @@ AsyncReplResult<> RaftReplDev::start_replace_member(const replica_member_info& m
         // If leader is the member requested to move out, then give up leadership and return error.
         // Client will retry start_replace_member request to the new leader.
         raft_server()->yield_leadership(true /* immediate */, -1 /* successor */);
-        RD_LOGI(trace_id, "Step1. Replace member leader is the member_out so yield leadership");
+        RD_LOGI(trace_id, "Step1. Replace member, leader is the member_out so yield leadership");
         reset_quorum_size(0, trace_id);
         decr_pending_request_num();
         return make_async_error<>(ReplServiceError::NOT_LEADER);
@@ -204,38 +204,47 @@ AsyncReplResult<> RaftReplDev::start_replace_member(const replica_member_info& m
 
     // Step 4. Add the new member, new member will inherit the priority of the out member.
     RD_LOGI(trace_id, "Step4. Replace member propose to raft to add new member, group_id={}", group_id_str());
-    auto new_srv_config =
-        nuraft::srv_config(nuraft_mesg::to_server_id(member_in.id), 0, boost::uuids::to_string(member_in.id), "", false,
-                           out_srv_cfg->get_priority());
-    return m_msg_mgr.add_member(m_group_id, new_srv_config)
-        .via(&folly::InlineExecutor::instance())
-        .thenValue([this, member_in, member_out, commit_quorum, trace_id](auto&& e) -> AsyncReplResult<> {
-            // TODO Currently we ignore the cancelled, fix nuraft_mesg to not timeout
-            // when adding member. Member is added to cluster config until member syncs fully
-            // with atleast stop gap. This will take a lot of time for block or
-            // object storage.
-            if (e.hasError()) {
-                // Ignore the server already exists as server already added to the cluster.
-                // The pg member change requests from control path are idemepotent and request
-                // can be resend and one of the add or remove can failed and has to retried.
-                if (e.error() == nuraft::cmd_result_code::CANCELLED ||
-                    e.error() == nuraft::cmd_result_code::SERVER_ALREADY_EXISTS) {
-                    RD_LOGW(trace_id, "Step4. Ignoring error returned from nuraft add_member {}", e.error());
-                } else {
-                    RD_LOGE(trace_id, "Step4. Replace member error in add member : {}", e.error());
-                    reset_quorum_size(0, trace_id);
-                    decr_pending_request_num();
-                    return make_async_error<>(RaftReplService::to_repl_error(e.error()));
-                }
-            }
+    auto ret = do_add_member(member_in, trace_id);
+    if (ret != ReplServiceError::OK) {
+        RD_LOGE(trace_id, "Step4. Replace member, add member failed {}", ret);
+        reset_quorum_size(0, trace_id);
+        decr_pending_request_num();
+        return make_async_error<>(std::move(ret));
+    }
+    RD_LOGI(trace_id, "Proposed to raft to add member, member={}", boost::uuids::to_string(member_in.id));
 
-            RD_LOGI(trace_id, "Step4. Replace member added member={} to group_id={}", boost::uuids::to_string(member_in.id),
-                    group_id_str());
-            // Revert the quorum size back to 0.
-            reset_quorum_size(0, trace_id);
-            decr_pending_request_num();
-            return make_async_success<>();
-        });
+    reset_quorum_size(0, trace_id);
+    decr_pending_request_num();
+    return make_async_success<>();
+    // return m_msg_mgr.add_member(m_group_id, new_srv_config)
+    //     .via(&folly::InlineExecutor::instance())
+    //     .thenValue([this, member_in, member_out, commit_quorum, trace_id](auto&& e) -> AsyncReplResult<> {
+    //         // TODO Currently we ignore the cancelled, fix nuraft_mesg to not timeout
+    //         // when adding member. Member is added to cluster config until member syncs fully
+    //         // with atleast stop gap. This will take a lot of time for block or
+    //         // object storage.
+    //         if (e.hasError()) {
+    //             // Ignore the server already exists as server already added to the cluster.
+    //             // The pg member change requests from control path are idemepotent and request
+    //             // can be resend and one of the add or remove can failed and has to retried.
+    //             if (e.error() == nuraft::cmd_result_code::CANCELLED ||
+    //                 e.error() == nuraft::cmd_result_code::SERVER_ALREADY_EXISTS) {
+    //                 RD_LOGW(trace_id, "Step4. Ignoring error returned from nuraft add_member {}", e.error());
+    //             } else {
+    //                 RD_LOGE(trace_id, "Step4. Replace member error in add member : {}", e.error());
+    //                 reset_quorum_size(0, trace_id);
+    //                 decr_pending_request_num();
+    //                 return make_async_error<>(RaftReplService::to_repl_error(e.error()));
+    //             }
+    //         }
+    //
+    //         RD_LOGI(trace_id, "Step4. Replace member added member={} to group_id={}", boost::uuids::to_string(member_in.id),
+    //                 group_id_str());
+    //         // Revert the quorum size back to 0.
+    //         reset_quorum_size(0, trace_id);
+    //         decr_pending_request_num();
+    //         return make_async_success<>();
+    //     });
 }
 
 AsyncReplResult<> RaftReplDev::complete_replace_member(const replica_member_info& member_out,
@@ -286,6 +295,34 @@ AsyncReplResult<> RaftReplDev::complete_replace_member(const replica_member_info
     reset_quorum_size(0, trace_id);
     decr_pending_request_num();
     return make_async_success<>();
+}
+
+ReplServiceError RaftReplDev::do_add_member(const replica_member_info& member, uint64_t trace_id) {
+    // The member should not be the leader.
+    if (m_my_repl_id != get_leader_id()) {
+        RD_LOGI(trace_id, "Member to add failed, not leader");
+        return ReplServiceError::NOT_LEADER;
+    }
+    auto ret = retry_when_config_change(
+       [&] {
+           auto rem_ret = m_msg_mgr.add_member(m_group_id, member.id)
+                              .via(&folly::InlineExecutor::instance())
+                              .thenValue([this, member, trace_id](auto&& e) -> nuraft::cmd_result_code {
+                                  return e.hasError() ? e.error() : nuraft::cmd_result_code::OK;
+                              });
+           return rem_ret.value();
+       }, trace_id);
+    if (ret == nuraft::cmd_result_code::CANCELLED ||
+                    ret == nuraft::cmd_result_code::SERVER_ALREADY_EXISTS) {
+        RD_LOGW(trace_id, "Ignoring error returned from nuraft add_member, member={}, err={}", boost::uuids::to_string(member.id), ret);
+    } else if (ret != nuraft::cmd_result_code::OK) {
+        // Its ok to retry this request as the request
+        // of replace member is idempotent.
+        RD_LOGE(trace_id, "Add member failed, member={}, err={}", boost::uuids::to_string(member.id), ret);
+        return ReplServiceError::RETRY_REQUEST;
+    }
+    RD_LOGE(trace_id, "Proposed to raft to add member, member={}", boost::uuids::to_string(member.id));
+    return ReplServiceError::OK;
 }
 
 ReplServiceError RaftReplDev::do_remove_member(const replica_member_info& member, uint64_t trace_id) {

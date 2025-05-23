@@ -231,6 +231,7 @@ public:
                                               uint64_t trace_id = 0);
     AsyncReplResult<> flip_learner_flag(const replica_member_info& member, bool target, uint32_t commit_quorum,
                                         bool wait_and_verify = true, uint64_t trace_id = 0);
+    ReplServiceError do_add_member(const replica_member_info& member, uint64_t trace_id = 0);
     ReplServiceError do_remove_member(const replica_member_info& member, uint64_t trace_id = 0);
     ReplServiceError do_flip_learner(const replica_member_info& member, bool target, bool wait_and_verify,
                                      uint64_t trace_id = 0);
