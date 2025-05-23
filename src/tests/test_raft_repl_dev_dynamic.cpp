@@ -38,11 +38,11 @@ TEST_F(ReplDevDynamicTest, ReplaceMember) {
 
     g_helper->sync_for_test_start(num_members);
     if (g_helper->replica_num() < num_replicas) {
-        // With existing raft repl dev group, write IO's, validate and call replace_member on leader.
+        // With existing raft repl dev group, write IO's, validate and call start_replace_member on leader.
         LOGINFO("Writing on leader num_io={} replica={}", num_io_entries, g_helper->replica_num());
         this->write_on_leader(num_io_entries, true /* wait_for_commit */);
 
-        replace_member(db, g_helper->replica_id(member_out), g_helper->replica_id(member_in));
+        start_replace_member(db, g_helper->replica_id(member_out), g_helper->replica_id(member_in));
         std::this_thread::sleep_for(std::chrono::seconds(3));
     } else if (g_helper->replica_num() == member_in) {
         LOGINFO("Wait for commits replica={}", g_helper->replica_num());
@@ -106,7 +106,7 @@ TEST_F(ReplDevDynamicTest, TwoMemberDown) {
         // Replace down replica 2 with spare replica 3 with commit quorum 1
         // so that leader can go ahead with replacing member.
         LOGINFO("Replace member started");
-        replace_member(db, g_helper->replica_id(member_out), g_helper->replica_id(member_in), 1 /* commit quorum*/);
+        start_replace_member(db, g_helper->replica_id(member_out), g_helper->replica_id(member_in), 1 /* commit quorum*/);
         this->write_on_leader(num_io_entries, true /* wait_for_commit */);
         LOGINFO("Leader completed num_io={}", num_io_entries);
     }
@@ -159,11 +159,11 @@ TEST_F(ReplDevDynamicTest, OneMemberDown) {
 
     std::this_thread::sleep_for(std::chrono::seconds(3));
     if (g_helper->replica_num() == 0) {
-        // With existing raft repl dev group, write IO's, validate and call replace_member on leader.
+        // With existing raft repl dev group, write IO's, validate and call start_replace_member on leader.
         LOGINFO("Writing on leader num_io={} replica={}", num_io_entries, g_helper->replica_num());
         this->write_on_leader(num_io_entries, true /* wait_for_commit */);
 
-        replace_member(db, g_helper->replica_id(member_out), g_helper->replica_id(member_in));
+        start_replace_member(db, g_helper->replica_id(member_out), g_helper->replica_id(member_in));
         std::this_thread::sleep_for(std::chrono::seconds(3));
     } else if (g_helper->replica_num() == member_in) {
         LOGINFO("Wait for commits replica={}", g_helper->replica_num());
@@ -209,18 +209,18 @@ TEST_F(ReplDevDynamicTest, LeaderReplace) {
 
     if (g_helper->replica_num() != member_in) {
         LOGINFO("Writing on leader num_io={} replica={}", num_io_entries, g_helper->replica_num());
-        // With existing raft repl dev group, write IO's, validate and call replace_member on leader.
+        // With existing raft repl dev group, write IO's, validate and call start_replace_member on leader.
         this->write_on_leader(num_io_entries, true /* wait_for_commit */);
 
         // Leader will return error NOT_LEADER and yield leadership, sleep and connect again
         // to the new leader.
         LOGINFO("Replace old leader");
-        replace_member(db, g_helper->replica_id(member_out), g_helper->replica_id(member_in), 0,
+        start_replace_member(db, g_helper->replica_id(member_out), g_helper->replica_id(member_in), 0,
                        ReplServiceError::NOT_LEADER);
         LOGINFO("Replace member leader yield done");
 
         std::this_thread::sleep_for(std::chrono::seconds(3));
-        replace_member(db, g_helper->replica_id(member_out), g_helper->replica_id(member_in));
+        start_replace_member(db, g_helper->replica_id(member_out), g_helper->replica_id(member_in));
         LOGINFO("Replace member old leader done");
     }
 
@@ -264,11 +264,11 @@ TEST_F(ReplDevDynamicTest, OneMemberRestart) {
     }
 
     if (g_helper->replica_num() == 0) {
-        // With existing raft repl dev group, write IO's, validate and call replace_member on leader.
+        // With existing raft repl dev group, write IO's, validate and call start_replace_member on leader.
         LOGINFO("Writing on leader num_io={} replica={}", num_io_entries, g_helper->replica_num());
         this->write_on_leader(num_io_entries, true /* wait_for_commit */);
 
-        replace_member(db, g_helper->replica_id(member_out), g_helper->replica_id(member_in));
+        start_replace_member(db, g_helper->replica_id(member_out), g_helper->replica_id(member_in));
         std::this_thread::sleep_for(std::chrono::seconds(3));
     } else if (g_helper->replica_num() == member_in) {
         LOGINFO("Wait for commits replica={}", g_helper->replica_num());
