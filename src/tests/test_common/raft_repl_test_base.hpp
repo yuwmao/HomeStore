@@ -345,7 +345,12 @@ public:
         return blk_alloc_hints{};
     }
     void on_start_replace_member(const replica_member_info& member_out, const replica_member_info& member_in) override {
-        LOGINFO("[Replica={}] replace member out {} in {}", g_helper->replica_num(),
+        LOGINFO("[Replica={}] start replace member out {} in {}", g_helper->replica_num(),
+                boost::uuids::to_string(member_out.id), boost::uuids::to_string(member_in.id));
+    }
+
+    void on_complete_replace_member(const replica_member_info& member_out, const replica_member_info& member_in) override {
+        LOGINFO("[Replica={}] complete replace member out {} in {}", g_helper->replica_num(),
                 boost::uuids::to_string(member_out.id), boost::uuids::to_string(member_in.id));
     }
 

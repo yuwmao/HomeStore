@@ -254,7 +254,26 @@ AsyncReplResult<> RaftReplDev::complete_replace_member(const replica_member_info
         // Two members are down and leader cant form the quorum. Reduce the quorum size.
         reset_quorum_size(commit_quorum, trace_id);
     }
-    // Step 1: Remove member
+    // Step 1. Append log entry to complete replace member
+    RD_LOGI(trace_id, "Step3. Replace member propose to raft for HS_CTRL_COMPLETE_REPLACE req, group_id={}", group_id_str());
+    auto rreq = repl_req_ptr_t(new repl_req_ctx{});
+    start_replace_members_ctx members;
+    members.replica_out = member_out;
+    members.replica_in = member_in;
+
+    sisl::blob header(r_cast< uint8_t* >(&members), sizeof(start_replace_members_ctx));
+    rreq->init(repl_key{.server_id = server_id(), .term = raft_server()->get_term(), .dsn = m_next_dsn.fetch_add(1)},
+               journal_type_t::HS_CTRL_COMPLETE_REPLACE, true, header, sisl::blob{}, 0, m_listener);
+
+    auto err = m_state_machine->propose_to_raft(std::move(rreq));
+    if (err != ReplServiceError::OK) {
+        RD_LOGE(trace_id, "Step3. Complete replace member propose to raft for HS_CTRL_COMPLETE_REPLACE req failed {}", err);
+        reset_quorum_size(0, trace_id);
+        decr_pending_request_num();
+        return make_async_error<>(std::move(err));
+    }
+
+    // Step 2: Remove member
     auto ret = do_remove_member(member_out, trace_id);
     if (ret != ReplServiceError::OK) {
         RD_LOGE(trace_id, "Remove member failed {}", ret);
@@ -263,8 +282,6 @@ AsyncReplResult<> RaftReplDev::complete_replace_member(const replica_member_info
         return make_async_error<>(std::move(ret));
     }
     RD_LOGI(trace_id, "Proposed to raft to remove member, member={}", boost::uuids::to_string(member_out.id));
-
-    // TODO Step 2. Append log entry to mark the old member is out and new member is added.
 
     reset_quorum_size(0, trace_id);
     decr_pending_request_num();
@@ -1196,6 +1213,8 @@ void RaftReplDev::handle_commit(repl_req_ptr_t rreq, bool recovery) {
         leave();
     } else if (rreq->op_code() == journal_type_t::HS_CTRL_START_REPLACE) {
         start_replace_member(rreq);
+    } else if (rreq->op_code() == journal_type_t::HS_CTRL_COMPLETE_REPLACE) {
+        complete_replace_member(rreq);
     } else {
         m_listener->on_commit(rreq->lsn(), rreq->header(), rreq->key(), {rreq->local_blkid()}, rreq);
     }
@@ -1263,8 +1282,11 @@ void RaftReplDev::handle_error(repl_req_ptr_t const& rreq, ReplServiceError err)
             });
         }
     } else if (rreq->op_code() == journal_type_t::HS_CTRL_DESTROY ||
-               rreq->op_code() == journal_type_t::HS_CTRL_START_REPLACE) {
-        if (rreq->is_proposer()) { m_destroy_promise.setValue(err); }
+               rreq->op_code() == journal_type_t::HS_CTRL_COMPLETE_REPLACE) {
+        if (rreq->is_proposer()) {
+            RD_LOGE(rreq->traceID(), "Raft Channel: Error in processing rreq=[{}] error={}", rreq->to_string(), err);
+            m_destroy_promise.setValue(err);
+        }
     }
 
     // TODO: Validate if this is a correct assert or not. Is it possible that the log is already flushed and we receive
@@ -1286,6 +1308,15 @@ void RaftReplDev::start_replace_member(repl_req_ptr_t rreq) {
             boost::uuids::to_string(members->replica_out.id), boost::uuids::to_string(members->replica_in.id));
 
     m_listener->on_start_replace_member(members->replica_out, members->replica_in);
+}
+
+void RaftReplDev::complete_replace_member(repl_req_ptr_t rreq) {
+    auto members = r_cast< const start_replace_members_ctx* >(rreq->header().cbytes());
+
+    RD_LOGI(rreq->traceID(), "Raft repl complete_replace_member commit member_out={} member_in={}",
+            boost::uuids::to_string(members->replica_out.id), boost::uuids::to_string(members->replica_in.id));
+
+    m_listener->on_complete_replace_member(members->replica_out, members->replica_in);
 }
 
 static bool blob_equals(sisl::blob const& a, sisl::blob const& b) {
