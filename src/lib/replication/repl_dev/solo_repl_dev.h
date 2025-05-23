@@ -65,8 +65,7 @@ public:
                                                   .replication_idx_ = 0,
                                                   .last_succ_resp_us_ = 0,
                                                   .priority_ = 1,
-                                                  .is_learner_ = false,
-                                                  .is_new_joiner_ = false}};
+                                                  .role_ = PeerRole::LEADER}};
     }
     bool is_ready_for_traffic() const override { return true; }
     void purge() override {}

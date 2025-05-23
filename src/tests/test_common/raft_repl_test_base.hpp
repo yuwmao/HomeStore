@@ -344,8 +344,14 @@ public:
         }
         return blk_alloc_hints{};
     }
-    void on_replace_member(const replica_member_info& member_out, const replica_member_info& member_in) override {
-        LOGINFO("[Replica={}] replace member out {} in {}", g_helper->replica_num(),
+    void on_start_replace_member(const replica_member_info& member_out, const replica_member_info& member_in) override {
+        LOGINFO("[Replica={}] start replace member, out {} in {}", g_helper->replica_num(),
+                boost::uuids::to_string(member_out.id), boost::uuids::to_string(member_in.id));
+    }
+
+    void on_complete_replace_member(const replica_member_info& member_out,
+                                    const replica_member_info& member_in) override {
+        LOGINFO("[Replica={}] complete replace member, out {} in {}", g_helper->replica_num(),
                 boost::uuids::to_string(member_out.id), boost::uuids::to_string(member_in.id));
     }
 
@@ -745,12 +751,21 @@ public:
 
             replica_member_info out{member_out, ""};
             replica_member_info in{member_in, ""};
-            auto result = hs()->repl_service().replace_member(db->repl_dev()->group_id(), out, in, commit_quorum).get();
+            auto start_result =
+                hs()->repl_service().start_replace_member(db->repl_dev()->group_id(), out, in, commit_quorum).get();
             if (error == ReplServiceError::OK) {
-                ASSERT_EQ(result.hasError(), false) << "Error in replacing member";
+                ASSERT_EQ(start_result.hasError(), false) << "Error in starting replace member";
             } else {
-                ASSERT_EQ(result.hasError(), true) << "Error in replacing member";
-                ASSERT_EQ(result.error(), error);
+                ASSERT_EQ(start_result.hasError(), true) << "Error in starting replace member";
+                ASSERT_EQ(start_result.error(), error);
+            }
+            auto complete_result =
+                hs()->repl_service().complete_replace_member(db->repl_dev()->group_id(), out, in, commit_quorum).get();
+            if (error == ReplServiceError::OK) {
+                ASSERT_EQ(complete_result.hasError(), false) << "Error in completing replace member";
+            } else {
+                ASSERT_EQ(complete_result.hasError(), true) << "Error in completing replace member";
+                ASSERT_EQ(complete_result.error(), error);
             }
         });
     }

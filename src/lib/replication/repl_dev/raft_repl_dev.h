@@ -224,12 +224,15 @@ public:
 
     bool bind_data_service();
     bool join_group();
-    AsyncReplResult<> replace_member(const replica_member_info& member_out, const replica_member_info& member_in,
-                                     bool immediate_removal = false, uint32_t commit_quorum = 0, uint64_t trace_id = 0);
-    AsyncReplResult<> remove_member(const replica_member_info& member, uint32_t commit_quorum, uint64_t trace_id = 0);
+    AsyncReplResult<> start_replace_member(const replica_member_info& member_out, const replica_member_info& member_in,
+                                           uint32_t commit_quorum = 0, uint64_t trace_id = 0);
+    AsyncReplResult<> complete_replace_member(const replica_member_info& member_out,
+                                              const replica_member_info& member_in, uint32_t commit_quorum = 0,
+                                              uint64_t trace_id = 0);
     AsyncReplResult<> flip_learner_flag(const replica_member_info& member, bool target, uint32_t commit_quorum,
                                         bool wait_and_verify = true, uint64_t trace_id = 0);
     ReplServiceError do_remove_member(const replica_member_info& member, uint64_t trace_id = 0);
+    ReplServiceError do_add_member(const replica_member_info& member, uint64_t trace_id);
     ReplServiceError do_flip_learner(const replica_member_info& member, bool target, bool wait_and_verify,
                                      uint64_t trace_id = 0);
     ReplServiceError set_priority(const replica_member_info& member, int32_t priority, uint64_t trace_id = 0);
@@ -430,7 +433,8 @@ private:
     void on_log_found(logstore_seq_num_t lsn, log_buffer buf, void* ctx);
     void set_log_store_last_durable_lsn(store_lsn_t lsn);
     void commit_blk(repl_req_ptr_t rreq);
-    void replace_member(repl_req_ptr_t rreq);
+    void start_replace_member(repl_req_ptr_t rreq);
+    void complete_replace_member(repl_req_ptr_t rreq);
     void reset_quorum_size(uint32_t commit_quorum, uint64_t trace_id);
     void create_snp_resync_data(raft_buf_ptr_t& data_out);
     bool save_snp_resync_data(nuraft::buffer& data, nuraft::snapshot& s);

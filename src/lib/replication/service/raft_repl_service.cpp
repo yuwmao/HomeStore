@@ -476,9 +476,9 @@ void RaftReplService::load_repl_dev(sisl::byte_view const& buf, void* meta_cooki
     add_repl_dev(group_id, rdev);
 }
 
-AsyncReplResult<> RaftReplService::replace_member(group_id_t group_id, const replica_member_info& member_out,
-                                                  const replica_member_info& member_in, bool immediate_removal,
-                                                  uint32_t commit_quorum, uint64_t trace_id) const {
+AsyncReplResult<> RaftReplService::start_replace_member(group_id_t group_id, const replica_member_info& member_out,
+                                                        const replica_member_info& member_in, uint32_t commit_quorum,
+                                                        uint64_t trace_id) const {
     if (is_stopping()) return make_async_error<>(ReplServiceError::STOPPING);
     incr_pending_request_num();
     auto rdev_result = get_repl_dev(group_id);
@@ -488,7 +488,7 @@ AsyncReplResult<> RaftReplService::replace_member(group_id_t group_id, const rep
     }
 
     return std::dynamic_pointer_cast< RaftReplDev >(rdev_result.value())
-        ->replace_member(member_out, member_in, immediate_removal, commit_quorum, trace_id)
+        ->start_replace_member(member_out, member_in, commit_quorum, trace_id)
         .via(&folly::InlineExecutor::instance())
         .thenValue([this](auto&& e) mutable {
             if (e.hasError()) {
@@ -500,7 +500,9 @@ AsyncReplResult<> RaftReplService::replace_member(group_id_t group_id, const rep
         });
 }
 
-AsyncReplResult<> RaftReplService::remove_member(group_id_t group_id, const replica_member_info& member, uint32_t commit_quorum, uint64_t trace_id) const {
+AsyncReplResult<> RaftReplService::complete_replace_member(group_id_t group_id, const replica_member_info& member_out,
+                                                           const replica_member_info& member_in, uint32_t commit_quorum,
+                                                           uint64_t trace_id) const {
     if (is_stopping()) return make_async_error<>(ReplServiceError::STOPPING);
     incr_pending_request_num();
     auto rdev_result = get_repl_dev(group_id);
@@ -509,7 +511,7 @@ AsyncReplResult<> RaftReplService::remove_member(group_id_t group_id, const repl
         return make_async_error<>(ReplServiceError::SERVER_NOT_FOUND);
     }
     return std::dynamic_pointer_cast< RaftReplDev >(rdev_result.value())
-        ->remove_member(member, commit_quorum, trace_id)
+        ->complete_replace_member(member_out, member_in, commit_quorum, trace_id)
         .via(&folly::InlineExecutor::instance())
         .thenValue([this](auto&& e) mutable {
             if (e.hasError()) {

@@ -43,10 +43,11 @@ VENUM(repl_req_state_t, uint32_t,
 )
 
 VENUM(journal_type_t, uint16_t,
-      HS_DATA_LINKED = 0,  // Linked data where each entry will store physical blkid where data reside
-      HS_DATA_INLINED = 1, // Data is inlined in the header of journal entry
-      HS_CTRL_DESTROY = 2, // Control message to destroy the repl_dev
-      HS_CTRL_REPLACE = 3, // Control message to replace a member
+      HS_DATA_LINKED = 0,           // Linked data where each entry will store physical blkid where data reside
+      HS_DATA_INLINED = 1,          // Data is inlined in the header of journal entry
+      HS_CTRL_DESTROY = 2,          // Control message to destroy the repl_dev
+      HS_CTRL_REPLACE_START = 3,    // Control message to start replace a member
+      HS_CTRL_REPLACE_COMPLETE = 4, // Control message to complete replace a member
 )
 
 // magic num comes from the first 8 bytes of 'echo homestore_resync_data | md5sum'
@@ -367,8 +368,11 @@ public:
     /// after restart in case crash happened during the destroy.
     virtual void on_destroy(const group_id_t& group_id) = 0;
 
-    /// @brief Called when replace member is performed.
-    virtual void on_replace_member(const replica_member_info& member_out, const replica_member_info& member_in) = 0;
+    /// @brief Called when replace member is started.
+    virtual void on_start_replace_member(const replica_member_info& member_out, const replica_member_info& member_in) = 0;
+
+    /// @brief Called when remove member is complete.
+    virtual void on_complete_replace_member(const replica_member_info& member_out, const replica_member_info& member_in) = 0;
 
     /// @brief Called when the snapshot is being created by nuraft
     virtual AsyncReplResult<> create_snapshot(shared< snapshot_context > context) = 0;
