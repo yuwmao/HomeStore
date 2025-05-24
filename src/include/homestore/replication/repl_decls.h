@@ -38,6 +38,12 @@ VENUM(ReplServiceError, int32_t,
       DATA_DUPLICATED = -20002,
       QUIENCE_STATE = -20003, 
       FAILED = -32768);
+
+VENUM(PeerRole, uint8_t,
+      UNKNOWN = 0,
+      LEADER = 1,
+      FOLLOWER = 2,
+      LEARNER = 3);
 // clang-format on
 
 template < typename V, typename E >
@@ -81,10 +87,10 @@ struct peer_info {
     uint64_t last_succ_resp_us_ = 0;
     // The priority for leader election
     uint32_t priority_ = 0;
-    // The peer is learner or not
-    bool is_learner_ = false;
-    // The peer is new joiner or not
-    bool is_new_joiner_ = false;
+    // The peer role in replication group
+    PeerRole role_ = PeerRole::UNKNOWN;
+    // If this peer is myself
+    bool is_self_ = false;
 };
 
 struct replica_member_info {

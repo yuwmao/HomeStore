@@ -369,10 +369,12 @@ public:
     virtual void on_destroy(const group_id_t& group_id) = 0;
 
     /// @brief Called when start replace member.
-    virtual void on_start_replace_member(const replica_member_info& member_out, const replica_member_info& member_in) = 0;
+    virtual void on_start_replace_member(const replica_member_info& member_out, const replica_member_info& member_in,
+                                         trace_id_t tid) = 0;
 
     /// @brief Called when complete replace member.
-    virtual void on_complete_replace_member(const replica_member_info& member_out, const replica_member_info& member_in) = 0;
+    virtual void on_complete_replace_member(const replica_member_info& member_out, const replica_member_info& member_in,
+                                            trace_id_t tid) = 0;
 
     /// @brief Called when the snapshot is being created by nuraft
     virtual AsyncReplResult<> create_snapshot(shared< snapshot_context > context) = 0;
