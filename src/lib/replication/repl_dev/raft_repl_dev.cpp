@@ -154,23 +154,33 @@ AsyncReplResult<> RaftReplDev::start_replace_member(const replica_member_info& m
         reset_quorum_size(commit_quorum, trace_id);
     }
 
-    // Step 1: Check if leader itself is requested to move out.
-    if (m_my_repl_id == member_out.id && m_my_repl_id == get_leader_id()) {
-        // If leader is the member requested to move out, then give up leadership and return error.
-        // Client will retry start_replace_member request to the new leader.
-        raft_server()->yield_leadership(true /* immediate */, -1 /* successor */);
-        RD_LOGI(trace_id, "Step1. Replace member, leader is the member_out so yield leadership");
-        reset_quorum_size(0, trace_id);
-        decr_pending_request_num();
-        return make_async_error<>(ReplServiceError::NOT_LEADER);
-    }
-
+    // Step1, validate request
     auto out_srv_cfg = raft_server()->get_config()->get_server(nuraft_mesg::to_server_id(member_out.id));
     if (!out_srv_cfg) {
         RD_LOGE(trace_id, "Step1. Replace member invalid parameter, out member is not found");
         reset_quorum_size(0, trace_id);
         decr_pending_request_num();
         return make_async_error<>(ReplServiceError::SERVER_NOT_FOUND);
+    }
+    // Check if leader itself is requested to move out.
+    if (m_my_repl_id == member_out.id && m_my_repl_id == get_leader_id()) {
+        // If leader is the member requested to move out, then set priority to 0 and give up leadership and return error.
+        // Client will retry start_replace_member request to the new leader.
+        RD_LOGI(trace_id, "Step1. Replace member, leader is the member_out, member_out={}",
+        boost::uuids::to_string(member_out.id));
+        if (out_srv_cfg->get_priority() != 0) {
+            auto ret = set_priority(member_out, 0, trace_id);
+            if (ret != ReplServiceError::OK) {
+                // Actually this is the expected path, because nuraft will BROADCAST error if we are trying to set
+                // leader's priority=0
+                RD_LOGE(trace_id, "Step1. Replace member, set leader's priority to 0, failed {}", ret);
+            }
+        }
+        raft_server()->yield_leadership(true /* immediate */, -1 /* successor */);
+        RD_LOGI(trace_id, "Step1. Replace member, leader is the member_out so yield leadership");
+        reset_quorum_size(0, trace_id);
+        decr_pending_request_num();
+        return make_async_error<>(ReplServiceError::NOT_LEADER);
     }
 
     // Step 2: Handle out member.
@@ -286,6 +296,8 @@ AsyncReplResult<> RaftReplDev::complete_replace_member(const replica_member_info
         RD_LOGD(trace_id,
                 "Step5.  Replace member, wait for old member removed timed out, cancel the request, timeout: {}",
                 timeout);
+        // If the member_out is down, leader will force remove it after
+        // leave_timeout=leave_limit_(default=5)*heart_beat_interval_, it's better for client to retry it.
         return make_async_error<>(ReplServiceError::CANCELLED);
     }
     RD_LOGD(trace_id, "Step5.  Replace member, old member is removed, member={}",
@@ -379,7 +391,7 @@ ReplServiceError RaftReplDev::do_remove_member(const replica_member_info& member
                 boost::uuids::to_string(member.id), ret);
         return ReplServiceError::RETRY_REQUEST;
     }
-    RD_LOGE(trace_id, "Proposed to raft to remove member, member={}", boost::uuids::to_string(member.id));
+    RD_LOGI(trace_id, "Proposed to raft to remove member, member={}", boost::uuids::to_string(member.id));
     return ReplServiceError::OK;
 }
 
@@ -501,11 +513,12 @@ bool RaftReplDev::wait_and_check(const std::function< bool() >& check_func, uint
 
 ReplServiceError RaftReplDev::set_priority(const replica_member_info& member_out, int32_t priority, uint64_t trace_id) {
     auto priority_ret = raft_server()->set_priority(nuraft_mesg::to_server_id(member_out.id), priority);
-    // Set_priority should be handled by leader, so return error when BROADCAST and IGNORE happen.
+    // Set_priority should be handled by leader, but if the intent is to set the leader's priority to 0, it returns
+    // BROADCAST. In this case return NOT_LEADER to let client retry new leader.
     // If there is an uncommited_config, nuraft set_priority will honor this uncommited config and generate new
     // config based on it and won't have config_changing error.
     if (priority_ret != nuraft::raft_server::PrioritySetResult::SET) {
-        RD_LOGE(trace_id, "Step3. Replace member propose to raft to set priority failed, result: {}",
+        RD_LOGE(trace_id, "Propose to raft to set priority failed, result: {}",
                 priority_ret == nuraft::raft_server::PrioritySetResult::BROADCAST ? "BROADCAST" : "IGNORED");
         return ReplServiceError::NOT_LEADER;
     }

@@ -745,12 +745,32 @@ public:
     void start_replace_member(std::shared_ptr< TestReplicatedDB > db, replica_id_t member_out, replica_id_t member_in,
                         uint32_t commit_quorum = 0, ReplServiceError error = ReplServiceError::OK) {
         this->run_on_leader(db, [this, error, db, member_out, member_in, commit_quorum]() {
-            LOGINFO("Replace member out={} in={}", boost::uuids::to_string(member_out),
+            LOGINFO("Start replace member out={} in={}", boost::uuids::to_string(member_out),
                     boost::uuids::to_string(member_in));
 
             replica_member_info out{member_out, ""};
             replica_member_info in{member_in, ""};
             auto result = hs()->repl_service().start_replace_member(db->repl_dev()->group_id(), out, in, commit_quorum).get();
+            if (error == ReplServiceError::OK) {
+                ASSERT_EQ(result.hasError(), false) << "Error in replacing member, err=" << result.error();
+            } else {
+                ASSERT_EQ(result.hasError(), true) << "Error in replacing member";
+                ASSERT_EQ(result.error(), error);
+            }
+        });
+    }
+
+    void complete_replace_member(std::shared_ptr< TestReplicatedDB > db, replica_id_t member_out,
+                                 replica_id_t member_in, uint32_t commit_quorum = 0,
+                                 ReplServiceError error = ReplServiceError::OK) {
+        this->run_on_leader(db, [this, error, db, member_out, member_in, commit_quorum]() {
+            LOGINFO("Complete replace member out={} in={}", boost::uuids::to_string(member_out),
+                    boost::uuids::to_string(member_in));
+
+            replica_member_info out{member_out, ""};
+            replica_member_info in{member_in, ""};
+            auto result =
+                hs()->repl_service().complete_replace_member(db->repl_dev()->group_id(), out, in, commit_quorum).get();
             if (error == ReplServiceError::OK) {
                 ASSERT_EQ(result.hasError(), false) << "Error in replacing member";
             } else {
