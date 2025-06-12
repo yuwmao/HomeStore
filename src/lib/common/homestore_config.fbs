@@ -299,7 +299,7 @@ table Consensus {
     wait_for_config_change_ms: uint32 = 500;
 
     // The interval in ms to check if the new member in replace_member is fully synced and ready to take over
-    replace_member_sync_check_interval_ms: uint64 = 60000;
+    replace_member_sync_check_interval_ms: uint64 = 10000;
 }
 
 table HomeStoreSettings {
