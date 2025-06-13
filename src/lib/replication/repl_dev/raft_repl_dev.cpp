@@ -150,12 +150,16 @@ AsyncReplResult<> RaftReplDev::start_replace_member(uuid_t task_id, const replic
     RD_LOGI(trace_id, "Start replace member, task_id={}, member_out={} member_in={}", boost::uuids::to_string(task_id),
             boost::uuids::to_string(member_out.id), boost::uuids::to_string(member_in.id));
 
-    if (commit_quorum >= 1) {
-        // Two members are down and leader cant form the quorum. Reduce the quorum size.
-        reset_quorum_size(commit_quorum, trace_id);
+    // Step1, validate request
+    // TODO support rollback, this could happen when the first task failed, and we want to launch a new task to
+    // remediate it. Need to rollback the first task. And for the same task, it's reentrant and idempotent.
+    if (!m_rd_sb->replace_member_task.task_id.is_nil() && m_rd_sb->replace_member_task.task_id != task_id) {
+        RD_LOGE(trace_id, "Step1. Replace member, task_id={} is not the same as existing task_id={}",
+                boost::uuids::to_string(task_id), boost::uuids::to_string(m_rd_sb->replace_member_task.task_id));
+        decr_pending_request_num();
+        return make_async_error<>(ReplServiceError::REPLACE_MEMBER_TASK_MISMATCH);
     }
 
-    // Step1, validate request
     auto out_srv_cfg = raft_server()->get_config()->get_server(nuraft_mesg::to_server_id(member_out.id));
     if (!out_srv_cfg) {
         auto in_srv_cfg = raft_server()->get_config()->get_server(nuraft_mesg::to_server_id(member_in.id));
@@ -165,17 +169,14 @@ AsyncReplResult<> RaftReplDev::start_replace_member(uuid_t task_id, const replic
                     "member_out={} member_in={}",
                     boost::uuids::to_string(task_id), boost::uuids::to_string(member_out.id),
                     boost::uuids::to_string(member_in.id));
-            reset_quorum_size(0, trace_id);
             decr_pending_request_num();
             return make_async_success<>();
         }
         RD_LOGE(trace_id, "Step1. Replace member invalid parameter, out member is not found");
-        reset_quorum_size(0, trace_id);
         decr_pending_request_num();
         return make_async_error<>(ReplServiceError::SERVER_NOT_FOUND);
     }
     if (m_my_repl_id != get_leader_id()) {
-        reset_quorum_size(0, trace_id);
         decr_pending_request_num();
         return make_async_error<>(ReplServiceError::NOT_LEADER);
     }
@@ -186,7 +187,6 @@ AsyncReplResult<> RaftReplDev::start_replace_member(uuid_t task_id, const replic
         // client retry.
         raft_server()->yield_leadership(false /* immediate */, -1 /* successor */);
         RD_LOGI(trace_id, "Step1. Replace member, leader is the member_out so yield leadership");
-        reset_quorum_size(0, trace_id);
         decr_pending_request_num();
         return make_async_error<>(ReplServiceError::NOT_LEADER);
     }
@@ -209,9 +209,13 @@ AsyncReplResult<> RaftReplDev::start_replace_member(uuid_t task_id, const replic
     if (active_num < quorum && commit_quorum == 0) {
         RD_LOGE(trace_id, "Step1. Replace member, quorum safety check failed, active_peers={}, active_peers_exclude_out/in_member={}, required_quorum={}, commit_quorum={}",
                 active_peers.size(), active_num, quorum, commit_quorum);
-        reset_quorum_size(0, trace_id);
         decr_pending_request_num();
         return make_async_error<>(ReplServiceError::QUORUM_NOT_MET);
+    }
+
+    if (commit_quorum >= 1) {
+        // Two members are down and leader cant form the quorum. Reduce the quorum size.
+        reset_quorum_size(commit_quorum, trace_id);
     }
 
     // Step 2: Handle out member.

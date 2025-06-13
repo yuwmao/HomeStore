@@ -55,6 +55,13 @@ public:
     virtual AsyncReplResult<> flip_learner_flag(group_id_t group_id, const replica_member_info& member, bool target, uint32_t commit_quorum,
                                         bool wait_and_verify = true, uint64_t trace_id = 0) const = 0;
 
+    /// @brief Get status of member replacement.
+    /// @param group_id Group where the replace member happens
+    /// @param task_id Id of the replace member task. This is used to track the replace
+    /// @param member_out The member which is going to be replaced
+    /// @param member_in The member which is going to be added in place of member_out
+    /// @param others Other members excluding member_out, member_in
+    /// @return ReplaceMemberStatus
     virtual ReplaceMemberStatus get_replace_member_status(group_id_t group_id, uuid_t task_id,
                                                           const replica_member_info& member_out,
                                                           const replica_member_info& member_in,

@@ -62,6 +62,9 @@ TEST_F(ReplDevDynamicTest, ReplaceMember) {
         ASSERT_EQ(
             check_replace_member_status(db, task_id, g_helper->replica_id(member_out), g_helper->replica_id(member_in)),
             ReplaceMemberStatus::IN_PROGRESS);
+        auto new_task_id = boost::uuids::random_generator()();
+        replace_member(db, new_task_id, g_helper->replica_id(member_out), g_helper->replica_id(member_in), 0,
+                       ReplServiceError::REPLACE_MEMBER_TASK_MISMATCH);
     });
     if (is_replica_num_in({0, 1, member_in})) {
         // Skip the member which is going to be replaced. Validate data on all other replica's.
@@ -240,24 +243,26 @@ TEST_F(ReplDevDynamicTest, OutMemberDown) {
         LOGINFO("Repl dev destroyed on out member replica={}", g_helper->replica_num());
         db->set_zombie();
     }
-
+    g_helper->sync_for_test_start(num_members);
+    if (g_helper->replica_num() != 2) {
+        this->run_on_leader(db, [this, db, task_id, member_out, member_in] {
+            auto status = check_replace_member_status(db, task_id, g_helper->replica_id(member_out),
+                                                      g_helper->replica_id(member_in));
+            // out_member is down, so it can not response to remove req. Based on nuraft logic, leader will wait for
+            // timeout and remove it automatically. Simulate next complete_replace_member retry.
+            if (status == ReplaceMemberStatus::IN_PROGRESS) {
+                auto& raft_repl_svc = dynamic_cast< RaftReplService& >(hs()->repl_service());
+                raft_repl_svc.monitor_replace_member_replication_status();
+                LOGINFO("Simulate reaper thread to complete_replace_member");
+                std::this_thread::sleep_for(std::chrono::seconds(1));
+            }
+            ASSERT_EQ(check_replace_member_status(db, task_id, g_helper->replica_id(member_out),
+                                                  g_helper->replica_id(member_in)),
+                      ReplaceMemberStatus::COMPLETED);
+        });
+    }
     g_helper->sync_for_cleanup_start(num_members);
-    this->run_on_leader(db, [this, db, task_id, member_out, member_in] {
-        auto status =
-            check_replace_member_status(db, task_id, g_helper->replica_id(member_out), g_helper->replica_id(member_in));
-        // out_member is down, so it can not response to remove req. Based on nuraft logic, leader will wait for timeout
-        // and remove it automatically. Simulate next complete_replace_member retry.
-        if (status == ReplaceMemberStatus::IN_PROGRESS) {
-            auto& raft_repl_svc = dynamic_cast< RaftReplService& >(hs()->repl_service());
-            raft_repl_svc.monitor_replace_member_replication_status();
-            LOGINFO("Simulate reaper thread to complete_replace_member ");
-            std::this_thread::sleep_for(std::chrono::seconds(1));
-        }
-        ASSERT_EQ(
-            check_replace_member_status(db, task_id, g_helper->replica_id(member_out), g_helper->replica_id(member_in)),
-            ReplaceMemberStatus::COMPLETED);
-    });
-    LOGINFO("OneMemberDown test done replica={}", g_helper->replica_num());
+    LOGINFO("OutMemberDown test done replica={}", g_helper->replica_num());
 }
 
 TEST_F(ReplDevDynamicTest, LeaderReplace) {
@@ -309,11 +314,6 @@ TEST_F(ReplDevDynamicTest, LeaderReplace) {
     }
 
     g_helper->sync_for_verify_start(num_members);
-    this->run_on_leader(db, [this, db, task_id, member_out, member_in] {
-        ASSERT_EQ(
-            check_replace_member_status(db, task_id, g_helper->replica_id(member_out), g_helper->replica_id(member_in)),
-            ReplaceMemberStatus::IN_PROGRESS);
-    });
     LOGINFO("data synced, sync_for_verify_state replica={} ", g_helper->replica_num());
     if (g_helper->replica_num() == member_out) {
         // The out member will have the repl dev destroyed.

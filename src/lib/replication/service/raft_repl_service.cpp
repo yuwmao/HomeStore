@@ -528,6 +528,7 @@ AsyncReplResult<> RaftReplService::flip_learner_flag(group_id_t group_id, const 
         });
 }
 
+// This query should always be called on leader to avoid misleading results due to lagging status on some followers.
 ReplaceMemberStatus RaftReplService::get_replace_member_status(group_id_t group_id, uuid_t task_id,
                                                                const replica_member_info& member_out,
                                                                const replica_member_info& member_in,
