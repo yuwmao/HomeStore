@@ -29,6 +29,8 @@
 #include "common/homestore_utils.hpp"
 #include "common/homestore_assert.hpp"
 
+#include <common/homestore_flip.hpp>
+
 namespace homestore {
 
 static int determine_open_flags(io_flag oflags) {
@@ -96,6 +98,8 @@ DeviceManager::DeviceManager(const std::vector< dev_info >& devs, vdev_create_cb
 }
 
 void DeviceManager::format_devices() {
+    // Only the first time boot, we will generate the first block header. After that, the first block header will be
+    // loaded from the existing devices.
     ++m_first_blk_hdr.gen_number;
     m_first_blk_hdr.version = first_block_header::CURRENT_SUPERBLOCK_VERSION;
     std::strncpy(m_first_blk_hdr.product_name, first_block_header::PRODUCT_NAME,
@@ -108,38 +112,44 @@ void DeviceManager::format_devices() {
 
     // Get common iomgr_attributes
     for (auto& dinfo : m_dev_infos) {
-        auto attr = iomgr::DriveInterface::get_attributes(dinfo.dev_name);
-        if (dinfo.dev_size == 0) { dinfo.dev_size = PhysicalDev::get_dev_size(dinfo.dev_name); }
-        auto sb_size = hs_super_blk::total_used_size(dinfo);
-        auto buf = hs_utils::iobuf_alloc(sb_size, sisl::buftag::superblk, attr.align_size);
-        std::memset(buf, 0, sb_size);
-
-        first_block* fblk = r_cast< first_block* >(buf);
-        fblk->magic = first_block::HOMESTORE_MAGIC;
-        fblk->checksum = 0;          // Computed while writing the first block
-        fblk->formatting_done = 0x0; // Formatting is not done yet, until homestore is completely started
-        fblk->hdr = m_first_blk_hdr; // Entire header is copied as is
-        auto pdev_id = populate_pdev_info(dinfo, attr, m_first_blk_hdr.system_uuid, fblk->this_pdev_hdr);
-        fblk->checksum = crc32_ieee(init_crc32, uintptr_cast(fblk), first_block::s_atomic_fb_size);
-
-        auto pdev = std::make_unique< PhysicalDev >(dinfo, device_open_flags(dinfo.dev_name), fblk->this_pdev_hdr);
-
-        LOGINFO("Formatting Homestore on Device={} with first block as: [{}] total_super_blk_size={}", dinfo.dev_name,
-                fblk->to_string(), sb_size);
-        pdev->write_super_block(buf, sb_size, hs_super_blk::first_block_offset());
-
-        auto it = m_pdevs_by_type.find(dinfo.dev_type);
-        if (it == m_pdevs_by_type.end()) {
-            bool happened;
-            std::tie(it, happened) = m_pdevs_by_type.insert(std::pair{dinfo.dev_type, std::vector< PhysicalDev* >{}});
-        }
-        it->second.push_back(pdev.get());
-
-        pdev->format_chunks();
-        m_all_pdevs[pdev_id] = std::move(pdev);
-
-        hs_utils::iobuf_free(buf, sisl::buftag::superblk);
+        format_single_device(dinfo);
     }
+}
+
+uint32_t DeviceManager::format_single_device(dev_info& dinfo) {
+    HS_LOG_ASSERT(!m_first_blk_hdr.is_empty(), "Empty first block header, cannot format device {}", dinfo.dev_name);
+    auto attr = iomgr::DriveInterface::get_attributes(dinfo.dev_name);
+    if (dinfo.dev_size == 0) { dinfo.dev_size = PhysicalDev::get_dev_size(dinfo.dev_name); }
+    auto sb_size = hs_super_blk::total_used_size(dinfo);
+    auto buf = hs_utils::iobuf_alloc(sb_size, sisl::buftag::superblk, attr.align_size);
+    std::memset(buf, 0, sb_size);
+
+    first_block* fblk = r_cast< first_block* >(buf);
+    fblk->magic = first_block::HOMESTORE_MAGIC;
+    fblk->checksum = 0;          // Computed while writing the first block
+    fblk->formatting_done = 0x0; // Formatting is not done yet, until homestore is completely started
+    fblk->hdr = m_first_blk_hdr; // Entire header is copied as is
+    auto pdev_id = populate_pdev_info(dinfo, attr, m_first_blk_hdr.system_uuid, fblk->this_pdev_hdr);
+    fblk->checksum = crc32_ieee(init_crc32, uintptr_cast(fblk), first_block::s_atomic_fb_size);
+
+    auto pdev = std::make_unique< PhysicalDev >(dinfo, device_open_flags(dinfo.dev_name), fblk->this_pdev_hdr);
+
+    LOGINFO("Formatting Homestore on Device[dev_name={}, pdev_id={}] with first block as: [{}] total_super_blk_size={}",
+            dinfo.dev_name, pdev_id, fblk->to_string(), sb_size);
+    pdev->write_super_block(buf, sb_size, hs_super_blk::first_block_offset());
+
+    auto it = m_pdevs_by_type.find(dinfo.dev_type);
+    if (it == m_pdevs_by_type.end()) {
+        bool happened;
+        std::tie(it, happened) = m_pdevs_by_type.insert(std::pair{dinfo.dev_type, std::vector< PhysicalDev* >{}});
+    }
+    it->second.push_back(pdev.get());
+
+    pdev->format_chunks();
+    m_all_pdevs[pdev_id] = std::move(pdev);
+
+    hs_utils::iobuf_free(buf, sisl::buftag::superblk);
+    return pdev_id;
 }
 
 void DeviceManager::load_devices() {
@@ -153,29 +163,81 @@ void DeviceManager::load_devices() {
         m_boot_in_degraded_mode = true;
     }
 
-    for (const auto& d : m_dev_infos) {
+    // 1. Load all physical devices.
+    std::vector< dev_info > pdevs_to_format;
+    for (auto& d : m_dev_infos) {
         first_block fblk = PhysicalDev::read_first_block(d.dev_name, device_open_flags(d.dev_name));
         pdev_info_header* pinfo = &fblk.this_pdev_hdr;
 
-        RELEASE_ASSERT_EQ(pinfo->get_system_uuid_str(), m_first_blk_hdr.get_system_uuid_str(),
-                          "Device {} has uuid stamp different than this instance uuid. Perhaps device from other "
-                          "homestore is provided?",
-                          d.dev_name);
+        if (!fblk.is_valid()) {
+            pdevs_to_format.emplace_back(d);
+            LOGINFO("Empty first block found on device {}, format it", d.dev_name);
+        } else {
+            RELEASE_ASSERT_EQ(pinfo->get_system_uuid_str(), m_first_blk_hdr.get_system_uuid_str(),
+                              "Device {} has uuid stamp different than this instance uuid. Perhaps device from other "
+                              "homestore is provided?",
+                              d.dev_name);
 
-        auto pdev = std::make_unique< PhysicalDev >(d, device_open_flags(d.dev_name), *pinfo);
-        LOGINFO("Loading Homestore from Device={} with first block as: [{}]", d.dev_name, fblk.to_string());
+            auto pdev = std::make_unique< PhysicalDev >(d, device_open_flags(d.dev_name), *pinfo);
+            LOGINFO("Loading Homestore from Device={} with first block as: [{}]", d.dev_name, fblk.to_string());
 
-        auto it = m_pdevs_by_type.find(d.dev_type);
-        if (it == m_pdevs_by_type.end()) {
-            bool happened;
-            std::tie(it, happened) = m_pdevs_by_type.insert(std::pair{d.dev_type, std::vector< PhysicalDev* >{}});
+            auto it = m_pdevs_by_type.find(d.dev_type);
+            if (it == m_pdevs_by_type.end()) {
+                bool happened;
+                std::tie(it, happened) = m_pdevs_by_type.insert(std::pair{d.dev_type, std::vector< PhysicalDev* >{}});
+            }
+            it->second.push_back(pdev.get());
+            m_all_pdevs[pinfo->pdev_id] = std::move(pdev);
+            m_cur_pdev_id = std::max(m_cur_pdev_id, pinfo->pdev_id);
         }
-        it->second.push_back(pdev.get());
-
-        m_all_pdevs[pinfo->pdev_id] = std::move(pdev);
     }
 
+    // 2. format new devices.
+    for (auto& d : pdevs_to_format) {
+        auto pdev_id = format_single_device(d);
+        LOGINFO("Device {} has been formated, pdev_id {}", d.dev_name, pdev_id);
+    }
+
+    // 3. Recover vdevs from the physical devices.
     load_vdevs();
+
+    if (pdevs_to_format.empty()) return;
+    // 4. Add new physical devices to existing vdevs.
+    for (auto vdev : m_vdevs) {
+        if (vdev->missing_chunk_num() == 0) continue;
+        auto vinfo = vdev->info();
+        LOGINFO("Virtual device {} is undersized, missing_chunk_num={}, add new devices to it", vinfo.get_name(),
+                vdev->missing_chunk_num());
+        for (auto p : pdevs_to_format) {
+            if (vdev->missing_chunk_num() == 0) break;
+            auto pdev_iter = std::find_if(m_all_pdevs.begin(), m_all_pdevs.end(),
+                                          [&p](const std::unique_ptr< PhysicalDev >& pdev_ptr) {
+                                              return pdev_ptr && pdev_ptr->get_devname() == p.dev_name;
+                                          });
+            if (pdev_iter == m_all_pdevs.end()) {
+                LOGWARN("Physical device with id {} is not found in all_pdevs, skipping", p.dev_name);
+                continue;
+            }
+            auto pdev = pdev_iter->get();
+            auto total_chunk_num_in_pdev =
+                std::min(vdev->missing_chunk_num(), pdev->allocable_size() / vinfo.chunk_size);
+            if (total_chunk_num_in_pdev == 0) { continue; }
+            std::unique_lock lg{m_vdev_mutex};
+            add_pdev_to_vdev(vdev, pdev, total_chunk_num_in_pdev);
+            LOGINFO("Added pdev[name={}, id={}] with total_chunk_num_in_pdev={} to vdev {}", pdev->get_devname(),
+                    pdev->pdev_id(), total_chunk_num_in_pdev, vdev->info().get_name());
+
+            // Update vdev info in the super block area of the pdev
+            auto buf = hs_utils::iobuf_alloc(vdev_info::size, sisl::buftag::superblk, pdev->align_size());
+            std::memcpy(buf, &vinfo, sizeof(vdev_info));
+            uint64_t offset = hs_super_blk::vdev_sb_offset() + (vdev->info().vdev_id * vdev_info::size);
+            pdev->write_super_block(buf, vdev_info::size, offset);
+            hs_utils::iobuf_free(buf, sisl::buftag::superblk);
+        }
+    }
+
+    // TODO do we need to trigger cp flush here?
+    commit_formatting();
 }
 
 void DeviceManager::commit_formatting() {
@@ -340,7 +402,6 @@ shared< VirtualDev > DeviceManager::create_vdev(vdev_parameters&& vparam) {
 
     for (auto& pdev : pdevs) {
         if (total_created_chunks >= vparam.num_chunks) break;
-        std::vector< uint32_t > chunk_ids;
 
         // the total number of chunks will be created in this pdev
         auto total_chunk_num_in_pdev =
@@ -353,28 +414,13 @@ shared< VirtualDev > DeviceManager::create_vdev(vdev_parameters&& vparam) {
         LOGINFO("{} chunks is created on pdev {} for vdev {}, pdev data size is {}", total_chunk_num_in_pdev,
                 pdev->get_devname(), vparam.vdev_name, pdev->data_size());
 
-        // Create chunk ids for all chunks in each of these pdevs
-        for (uint32_t c{0}; c < total_chunk_num_in_pdev; ++c) {
-            auto chunk_id = m_chunk_id_bm.get_next_reset_bit(0u);
-            if (chunk_id == sisl::Bitset::npos) { throw std::out_of_range("System has no room for additional chunks"); }
-            m_chunk_id_bm.set_bit(chunk_id);
-            chunk_ids.push_back(chunk_id);
-        }
-
-        // Create all chunks at one shot and add each one to the vdev
-        auto chunks = pdev->create_chunks(chunk_ids, vdev_id, vparam.chunk_size);
-        for (auto& chunk : chunks) {
-            vdev->add_chunk(chunk, true /* fresh_chunk */);
-            m_chunks[chunk->chunk_id()] = chunk;
-        }
-
+        add_pdev_to_vdev(vdev, pdev, total_chunk_num_in_pdev);
         total_created_chunks += total_chunk_num_in_pdev;
     }
 
     LOGINFO("{} chunks is created for vdev {}, expected {}", total_created_chunks, vparam.vdev_name, vparam.num_chunks);
     // Handle any initialization needed.
     vdev->init();
-
     // Locate and write the vdev info in the super blk area of all pdevs this vdev will be created on
     for (auto& pdev : pdevs) {
         uint64_t offset = hs_super_blk::vdev_sb_offset() + (vdev_id * vdev_info::size);
@@ -385,6 +431,27 @@ shared< VirtualDev > DeviceManager::create_vdev(vdev_parameters&& vparam) {
     hs_utils::iobuf_free(buf, sisl::buftag::superblk);
     LOGINFO("Virtal Dev={} of size={} successfully created", vparam.vdev_name, in_bytes(vparam.vdev_size));
     return vdev;
+}
+
+void DeviceManager::add_pdev_to_vdev(shared< VirtualDev > vdev, PhysicalDev* pdev, uint32_t total_chunk_num_in_pdev) {
+    std::vector< uint32_t > chunk_ids;
+
+    LOGINFO("Add pdev {} to vdev {}, total_chunk_num_in_pdev={}", pdev->get_devname(), vdev->info().get_name(),
+            total_chunk_num_in_pdev);
+    // Create chunk ids for all chunks in each of these pdevs
+    for (uint32_t c{0}; c < total_chunk_num_in_pdev; ++c) {
+        auto chunk_id = m_chunk_id_bm.get_next_reset_bit(0u);
+        if (chunk_id == sisl::Bitset::npos) { throw std::out_of_range("System has no room for additional chunks"); }
+        m_chunk_id_bm.set_bit(chunk_id);
+        chunk_ids.push_back(chunk_id);
+    }
+
+    // Create all chunks at one shot and add each one to the vdev
+    auto chunks = pdev->create_chunks(chunk_ids, vdev->info().get_vdev_id(), vdev->info().chunk_size);
+    for (auto& chunk : chunks) {
+        vdev->add_chunk(chunk, true /* fresh_chunk */);
+        m_chunks[chunk->chunk_id()] = chunk;
+    }
 }
 
 void DeviceManager::load_vdevs() {
@@ -404,6 +471,7 @@ void DeviceManager::load_vdevs() {
         for (auto& pdev : m_all_pdevs) {
             // we might have some missing pdevs in the sparse_vector m_all_pdevs, so skip them
             if (!pdev) continue;
+            // Empty device will skip this callback.
             pdev->load_chunks([this](cshared< Chunk >& chunk) -> bool {
                 // Found a chunk for which vdev information is missing
                 if (m_vdevs[chunk->vdev_id()] == nullptr) {
@@ -520,7 +588,7 @@ uint32_t DeviceManager::populate_pdev_info(const dev_info& dinfo, const iomgr::d
                                            const uuid_t& uuid, pdev_info_header& pinfo) {
     bool hdd = is_hdd(dinfo.dev_name);
 
-    pinfo.pdev_id = m_cur_pdev_id++;
+    pinfo.pdev_id = ++m_cur_pdev_id;
     pinfo.mirror_super_block = hdd ? 0x01 : 0x00;
     pinfo.max_pdev_chunks = hs_super_blk::max_chunks_in_pdev(dinfo);
 

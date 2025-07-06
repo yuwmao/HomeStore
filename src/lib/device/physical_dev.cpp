@@ -283,6 +283,7 @@ std::vector< shared< Chunk > > PhysicalDev::create_chunks(const std::vector< uin
                 get_stream(chunk).m_chunks_map.insert(std::pair{chunk_ids[cit], chunk});
                 HS_LOG(INFO, device, "Creating chunk {}", chunk->to_string());
                 cinfo->~chunk_info();
+                m_allocated_size += size;
             }
 
             m_chunk_info_slots->set_bits(b.start_bit, b.nbits);
@@ -337,6 +338,7 @@ shared< Chunk > PhysicalDev::create_chunk(uint32_t chunk_id, uint32_t vdev_id, u
 
         cinfo->~chunk_info();
         hs_utils::iobuf_free(buf, sisl::buftag::superblk);
+        m_allocated_size += size;
     } catch (std::out_of_range const& e) {
         cinfo->~chunk_info();
         hs_utils::iobuf_free(buf, sisl::buftag::superblk);
@@ -401,6 +403,7 @@ void PhysicalDev::load_chunks(std::function< bool(cshared< Chunk >&) >&& chunk_f
             m_chunk_data_area.insert(
                 ChunkInterval::right_open(cinfo->chunk_start_offset, cinfo->chunk_start_offset + cinfo->chunk_size));
             if (chunk_found_cb(chunk)) { get_stream(chunk).m_chunks_map.insert(std::pair{cinfo->chunk_id, chunk}); }
+            m_allocated_size += cinfo->chunk_size;
         }
         hs_utils::iobuf_free(buf, sisl::buftag::superblk);
     } while (true);
@@ -435,6 +438,7 @@ void PhysicalDev::do_remove_chunk(cshared< Chunk >& chunk) {
     get_stream(chunk).m_chunks_map.erase(chunk->chunk_id());
     cinfo->~chunk_info();
     hs_utils::iobuf_free(buf, sisl::buftag::superblk);
+    m_allocated_size = m_allocated_size - chunk_info::size > 0 ? m_allocated_size - chunk->info().chunk_size : 0;
     HS_LOG(DEBUG, device, "Removed chunk {}", chunk->to_string());
 }
 

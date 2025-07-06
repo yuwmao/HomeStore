@@ -297,6 +297,10 @@ public:
     virtual nlohmann::json get_status(int log_level) const;
     virtual uint64_t get_total_chunk_num() const { return m_total_chunk_num; }
 
+    // Used to get the number of chunks that are not available in the vdev when new device is added.
+    virtual uint64_t get_expect_chunk_num() const;
+
+    uint64_t missing_chunk_num() const { return get_expect_chunk_num() - m_total_chunk_num; }
     uint8_t get_dev_type() const { return m_vdev_info.hs_dev_type; }
     uint32_t align_size() const;
     uint32_t optimal_page_size() const;

@@ -137,6 +137,7 @@ private:
     std::unique_ptr< sisl::Bitset > m_chunk_info_slots; // Slots to write the chunk info
     uint32_t m_chunk_sb_size{0};                        // Total size of the chunk sb at present
     std::unordered_set< uint64_t > m_chunk_start;       // Store and verify start offset of all chunks for debugging.
+    uint64_t m_allocated_size{0};                          // Total size of the allocated space in this physical device
 
 public:
     PhysicalDev(const dev_info& dinfo, int oflags, const pdev_info_header& pinfo);
@@ -227,6 +228,8 @@ public:
     }
 
     uint64_t data_size() const { return data_end_offset() - data_start_offset(); }
+
+    uint64_t allocable_size() const { return data_size() - m_allocated_size; }
 
     uint64_t chunk_info_offset_nth(uint32_t slot) const;
 

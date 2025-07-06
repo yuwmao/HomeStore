@@ -122,7 +122,7 @@ void VirtualDev::add_chunk(cshared< Chunk >& chunk, bool is_fresh_chunk) {
                                    chunk->chunk_id(), is_fresh_chunk, m_use_slab_in_blk_allocator);
     chunk->set_block_allocator(std::move(ba));
     // TODO: when vdev_ordinal is  used, revisit here to make sure it is set correctly;
-    chunk->set_vdev_ordinal(m_total_chunk_num++);
+    chunk->set_vdev_ordinal(++m_total_chunk_num);
     m_pdevs.insert(chunk->physical_dev_mutable());
     m_all_chunks[chunk->chunk_id()] = chunk;
     m_chunk_selector->add_chunk(chunk);
@@ -683,6 +683,8 @@ nlohmann::json VirtualDev::get_status(int log_level) const {
     } catch (const std::exception& e) { LOGERROR("exception happened {}", e.what()); }
     return j;
 }
+
+uint64_t VirtualDev::get_expect_chunk_num() const { return m_vdev_info.vdev_size / m_vdev_info.chunk_size; }
 
 uint32_t VirtualDev::align_size() const { return m_dmgr.align_size(static_cast< HSDevType >(m_vdev_info.hs_dev_type)); }
 uint32_t VirtualDev::optimal_page_size() const {
