@@ -167,6 +167,10 @@ public:
     /// @param event_cb Event handler in case of
     /// @return
     shared< VirtualDev > create_vdev(vdev_parameters&& vdev_param);
+    void compose_vparam(uint64_t vdev_id, vdev_parameters& vparam, std::vector< PhysicalDev* > pdevs);
+    std::map< PhysicalDev*, uint32_t > calculate_vdev_chunk_num_on_new_pdevs(shared< VirtualDev > vdev,
+                                                                             std::vector< PhysicalDev* > pdevs,
+                                                                             uint64_t total_chunk_num);
     void add_pdev_to_vdev(shared< VirtualDev > vdev, PhysicalDev* pdev, uint32_t total_chunk_num_in_pdev);
     const Chunk* get_chunk(uint16_t chunk_id) { return get_chunk_mutable(chunk_id); }
 
