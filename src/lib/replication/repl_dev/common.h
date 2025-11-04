@@ -103,4 +103,17 @@ inline uint64_t generateRandomTraceId() {
     return dis(gen);
 }
 
+// RAII wrapper for managing atomic counter increment/decrement
+class init_req_counter {
+public:
+    init_req_counter(std::atomic_uint64_t& counter) : my_counter(counter) {
+        my_counter.fetch_add(1, std::memory_order_acq_rel);
+    }
+
+    ~init_req_counter() { my_counter.fetch_sub(1, std::memory_order_acq_rel); }
+
+private:
+    std::atomic_uint64_t& my_counter;
+};
+
 } // namespace homestore
