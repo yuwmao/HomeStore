@@ -2057,19 +2057,14 @@ std::vector< peer_info > RaftReplDev::get_replication_status() const {
 
 std::vector< replica_id_t > RaftReplDev::get_replication_quorum() {
     std::vector< replica_id_t > member_ids;
-    auto msg_service = group_msg_service();
+    auto config = load_config();
+    RD_REL_ASSERT(config, "Unable to load raft config during get_replication_quorum");
 
-    if (msg_service) {
-        std::list< nuraft_mesg::replica_config > cluster_config;
-        msg_service->get_cluster_config(cluster_config);
-        for (auto const& config : cluster_config) {
-            member_ids.push_back(boost::uuids::string_generator()(config.peer_id));
-        }
-        RD_LOGD(NO_TRACE_ID, "get_replication_quorum: found {} members in cluster config", member_ids.size());
-    } else {
-        RD_LOGW(NO_TRACE_ID, "get_replication_quorum: msg_service is null, returning empty member list");
+    for (auto const& srv : config->get_servers()) {
+        member_ids.push_back(boost::uuids::string_generator()(srv->get_endpoint()));
     }
 
+    RD_LOGD(NO_TRACE_ID, "get_replication_quorum: found {} members in raft config", member_ids.size());
     return member_ids;
 }
 
