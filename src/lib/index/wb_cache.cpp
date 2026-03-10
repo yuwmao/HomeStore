@@ -430,6 +430,14 @@ void IndexWBCache::link_buf(IndexBufferPtr const& up_buf, IndexBufferPtr const& 
         down_buf->m_up_buffer->remove_down_buffer(down_buf);
     }
     down_buf->m_up_buffer = real_up_buf;
+
+    // DEBUG: Log when adding CLEAN buffer as dependency
+    if (down_buf->state() == index_buf_state_t::CLEAN) {
+        LOGINFO("CLEAN_BUF_DEBUG: Adding CLEAN down_buf {} to up_buf {}, up_buf wait_count before={}",
+                down_buf->blkid().to_integer(), real_up_buf->blkid().to_integer(),
+                real_up_buf->m_wait_for_down_buffers.get());
+    }
+
     real_up_buf->add_down_buffer(down_buf);
 }
 
@@ -1009,13 +1017,26 @@ void IndexWBCache::get_next_bufs_internal(IndexCPContext* cp_ctx, uint32_t max_c
     // First attempt to execute any follower buffer flush
     if (prev_flushed_buf) {
         auto next_buffer = prev_flushed_buf->m_up_buffer;
-        if (next_buffer && next_buffer->m_wait_for_down_buffers.decrement_testz()) {
-            HS_DBG_ASSERT(next_buffer->state() == index_buf_state_t::DIRTY,
-                          "Trying to flush a up_buffer after down buffer is completed, but up_buffer is "
-                          "not in dirty state, but in {} state",
-                          (int)next_buffer->state());
-            bufs.emplace_back(next_buffer);
-            ++count;
+        if (next_buffer) {
+            LOGINFO("CP_FLUSH_DEBUG: prev_flushed_buf {} (state={}) has up_buffer {} (state={}, wait_count={})",
+                    prev_flushed_buf->blkid().to_integer(), (int)prev_flushed_buf->state(),
+                    next_buffer->blkid().to_integer(), (int)next_buffer->state(),
+                    next_buffer->m_wait_for_down_buffers.get());
+
+            if (next_buffer->m_wait_for_down_buffers.decrement_testz()) {
+                LOGINFO("CP_FLUSH_DEBUG: up_buffer {} wait_count reached 0, queueing for flush",
+                        next_buffer->blkid().to_integer());
+
+                HS_DBG_ASSERT(next_buffer->state() == index_buf_state_t::DIRTY,
+                              "Trying to flush a up_buffer after down buffer is completed, but up_buffer is "
+                              "not in dirty state, but in {} state",
+                              (int)next_buffer->state());
+                bufs.emplace_back(next_buffer);
+                ++count;
+            } else {
+                LOGINFO("CP_FLUSH_DEBUG: up_buffer {} wait_count after decrement = {}, not ready for flush yet",
+                        next_buffer->blkid().to_integer(), next_buffer->m_wait_for_down_buffers.get());
+            }
         }
 #ifndef NDEBUG
         // Retain prev up buffer for debugging purposes

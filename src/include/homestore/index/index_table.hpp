@@ -301,6 +301,9 @@ protected:
         auto prev_state = idx_node->m_idx_buf->m_state.exchange(index_buf_state_t::DIRTY);
         idx_node->m_idx_buf->m_node_level = node->level();
         if (prev_state == index_buf_state_t::CLEAN) {
+            // DEBUG: Log when CLEAN buffer is dirtied
+            LOGINFO("WRITE_NODE_DEBUG: Buffer {} was CLEAN, now marking as DIRTY and adding to CP {} dirty list",
+                    idx_node->m_idx_buf->blkid().to_integer(), cp_ctx->id());
             // It was clean before, dirtying it first time, add it to the wb_cache list to flush
             if (idx_node->m_idx_buf->m_dirtied_cp_id != -1) {
                 BT_DBG_ASSERT_EQ(idx_node->m_idx_buf->m_dirtied_cp_id, cp_ctx->id(),
@@ -377,8 +380,6 @@ protected:
         m_sb->root_node = new_root->node_id();
         m_sb->root_link_version = new_root->link_version();
         m_sb->btree_depth = new_root->level();
-        m_sb->total_interior_nodes = this->m_total_interior_nodes;
-        m_sb->total_leaf_nodes = this->m_total_leaf_nodes;
         std::tie(m_sb->total_interior_nodes, m_sb->total_leaf_nodes) = this->get_num_nodes();
 
         if (!wb_cache().refresh_meta_buf(m_sb_buffer, r_cast< CPContext* >(context))) {
@@ -387,7 +388,24 @@ protected:
         }
 
         auto& root_buf = static_cast< IndexBtreeNode* >(new_root.get())->m_idx_buf;
+
+        // DEBUG: Log new_root buffer state to check if it's CLEAN or DIRTY
+        auto cp_ctx = r_cast< CPContext* >(context);
+        LOGINFO("ROOT_COLLAPSE_DEBUG: new_root buffer state={} (0=CLEAN,1=DIRTY), blkid={}, created_cp={}, current_cp={}",
+                (int)root_buf->m_state.load(), root_buf->blkid().to_integer(),
+                root_buf->m_created_cp_id, cp_ctx ? cp_ctx->id() : 0);
+
+        // DEBUG: Log Meta buffer state BEFORE transact_bufs
+        LOGINFO("ROOT_COLLAPSE_DEBUG: Meta buffer BEFORE transact: state={}, dirtied_cp={}, current_cp={}, wait_count={}",
+                (int)m_sb_buffer->m_state.load(), m_sb_buffer->m_dirtied_cp_id,
+                cp_ctx ? cp_ctx->id() : 0, m_sb_buffer->m_wait_for_down_buffers.get());
+
         wb_cache().transact_bufs(ordinal(), m_sb_buffer, root_buf, {}, {}, r_cast< CPContext* >(context));
+
+        // DEBUG: Log Meta buffer state AFTER transact_bufs (after link_buf)
+        LOGINFO("ROOT_COLLAPSE_DEBUG: Meta buffer AFTER transact: state={}, dirtied_cp={}, wait_count={}",
+                (int)m_sb_buffer->m_state.load(), m_sb_buffer->m_dirtied_cp_id,
+                m_sb_buffer->m_wait_for_down_buffers.get());
         return btree_status_t::success;
     }
 
