@@ -814,6 +814,64 @@ TEST_F(RaftReplDevTest, ReconcileLeader) {
     g_helper->sync_for_cleanup_start();
 }
 
+#ifdef _PRERELEASE
+TEST_F(RaftReplDevTest, Restart_With_Lookup_Peer_Failure) {
+    LOGINFO("Homestore replica={} setup completed", g_helper->replica_num());
+    g_helper->sync_for_test_start();
+
+    // Step 1: Write some data to ensure raft group is active
+    uint64_t entries_per_attempt = SISL_OPTIONS["num_io"].as< uint64_t >();
+    this->write_on_leader(entries_per_attempt, true /* wait_for_commit */);
+
+    g_helper->sync_for_verify_start();
+    LOGINFO("Validate all data written so far by reading them");
+    this->validate_data();
+    g_helper->sync_for_cleanup_start();
+
+    // Step 2: Inject flip on replica 1 to simulate lookup_peer failure during restart
+    if (g_helper->replica_num() == 1) {
+        LOGINFO("Set flip to fake lookup_peer failure on replica=1");
+        // Set flip to trigger indefinitely (count=0 means no limit)
+        g_helper->set_basic_flip("fake_lookup_peer_failure", 10000, 100);
+    }
+
+    g_helper->sync_for_test_start();
+
+    // Step 3: Restart replica 1 (follower)
+    LOGINFO("Restart follower replica=1 with lookup_peer flip enabled");
+    this->restart_replica(1, 5 /* shutdown_delay_sec */);
+
+    g_helper->sync_for_verify_start();
+
+    // TODO: Verify if system hangs here when lookup_peer fails
+    LOGINFO("Waiting to observe behavior when lookup_peer fails during join_group...");
+    std::this_thread::sleep_for(std::chrono::seconds(10));
+
+    g_helper->sync_for_cleanup_start();
+
+    // // Step 4: Remove flip and verify replica 1 can rejoin after flip is cleared
+    // if (g_helper->replica_num() == 1) {
+    //     LOGINFO("Remove flip to allow lookup_peer to succeed");
+    //     g_helper->remove_flip("fake_lookup_peer_failure");
+    // }
+    //
+    // g_helper->sync_for_test_start();
+    //
+    // // Step 5: Wait for replica 1 to rejoin and become ready
+    // std::this_thread::sleep_for(std::chrono::seconds(5));
+    //
+    // // Step 6: Write more data to verify replica 1 is functional
+    // LOGINFO("Write more data to verify replica 1 rejoined successfully");
+    // this->write_on_leader(entries_per_attempt, true /* wait_for_commit */);
+    //
+    // g_helper->sync_for_verify_start();
+    // LOGINFO("Validate all data including post-restart writes");
+    // this->validate_data();
+    //
+    // g_helper->sync_for_cleanup_start();
+}
+#endif
+
 TEST_F(RaftReplDevTest, NuraftStateTransition) {
     LOGINFO("Homestore replica={} setup completed", g_helper->replica_num());
     g_helper->sync_for_test_start();

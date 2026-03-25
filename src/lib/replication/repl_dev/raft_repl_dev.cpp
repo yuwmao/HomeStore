@@ -138,6 +138,7 @@ bool RaftReplDev::join_group() {
         HS_DBG_ASSERT(false, "Unable to join the group_id={} with error={}", group_id_str(), raft_result.error());
         return false;
     }
+    RD_LOGI(NO_TRACE_ID, "Joined group {}", group_id_str());
     return true;
 }
 

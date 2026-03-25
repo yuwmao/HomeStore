@@ -124,6 +124,14 @@ public:
         void on_repl_devs_init_completed() { LOGINFO("Repl dev init completed CB called"); }
 
         std::pair< std::string, uint16_t > lookup_peer(homestore::replica_id_t replica_id) const override {
+#ifdef _PRERELEASE
+            // Inject flip to simulate lookup_peer failure during join_group
+            if (iomgr_flip::instance()->test_flip("fake_lookup_peer_failure")) {
+                LOGWARN("Flip triggered: returning invalid address for replica_id={}",
+                        boost::uuids::to_string(replica_id));
+                return std::make_pair(std::string(""), 0);
+            }
+#endif
             uint16_t port;
             if (auto it = helper_.members_.find(replica_id); it != helper_.members_.end()) {
                 port = SISL_OPTIONS["base_port"].as< uint16_t >() + it->second;

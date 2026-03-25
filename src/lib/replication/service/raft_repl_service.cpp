@@ -199,6 +199,7 @@ void RaftReplService::start() {
         if (!future.get()) HS_REL_ASSERT(false, "FAILED TO JOIN GROUP, PANIC HERE");
     }
 
+    LOGINFO("Join group done")
     // Step 7: Register to CPManager to ensure we can flush the superblk.
     hs()->cp_mgr().register_consumer(cp_consumer_t::REPLICATION_SVC, std::make_unique< RaftReplServiceCPHandler >());
 
