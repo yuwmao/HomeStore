@@ -241,6 +241,18 @@ AsyncReplResult<> RaftReplDev::start_replace_member(std::string& task_id, const 
         RD_LOGE(trace_id, "Step1. Replace member invalid parameter, out member is not found, task_id={}", task_id);
         return make_async_error<>(ReplServiceError::SERVER_NOT_FOUND);
     }
+
+    if (commit_quorum >= 1) {
+        // Reduce the quorum size BEFORE checking leadership. When two members are down, the raft leader will
+        // eventually yield its leadership after leadership_expiry (default: 20x heartbeat interval) because it
+        // cannot reach majority. Once leadership is lost, the remaining single node cannot elect itself without a
+        // reduced election quorum. By calling reset_quorum_size here first (which sets both custom_commit_quorum
+        // and custom_election_quorum to 1), the current leader is able to maintain leadership, and if leadership
+        // was already lost, the node will self-elect on the next election timeout. The caller should retry on
+        // NOT_LEADER to allow time for self-election to complete.
+        reset_quorum_size(commit_quorum, trace_id);
+    }
+
     if (m_my_repl_id != get_leader_id()) { return make_async_error<>(ReplServiceError::NOT_LEADER); }
     // Check if leader itself is requested to move out.
     if (m_my_repl_id == member_out.id) {
@@ -249,6 +261,7 @@ AsyncReplResult<> RaftReplDev::start_replace_member(std::string& task_id, const 
         // client retry.
         raft_server()->yield_leadership(false /* immediate */, -1 /* successor */);
         RD_LOGI(trace_id, "Step1. Replace member, leader is the member_out so yield leadership, task_id={}", task_id);
+        reset_quorum_size(0, trace_id);
         return make_async_error<>(ReplServiceError::NOT_LEADER);
     }
     // quorum safety check. TODO currently only consider lsn, need to check last response time.
@@ -272,18 +285,15 @@ AsyncReplResult<> RaftReplDev::start_replace_member(std::string& task_id, const 
                 "Step1. Replace member, quorum safety check failed, active_peers={}, "
                 "active_peers_exclude_out/in_member={}, required_quorum={}, commit_quorum={}, task_id={}",
                 active_peers.size(), active_num, quorum, commit_quorum, task_id);
+        reset_quorum_size(0, trace_id);
         return make_async_error<>(ReplServiceError::QUORUM_NOT_MET);
-    }
-
-    if (commit_quorum >= 1) {
-        // Two members are down and leader cant form the quorum. Reduce the quorum size.
-        reset_quorum_size(commit_quorum, trace_id);
     }
 
     // Step 2: Handle out member.
 #ifdef _PRERELEASE
     if (iomgr_flip::instance()->test_flip("replace_member_set_learner_failure")) {
         RD_LOGE(trace_id, "Simulating set member to learner failure");
+        reset_quorum_size(0, trace_id);
         return make_async_error(ReplServiceError::FAILED);
     }
 #endif
